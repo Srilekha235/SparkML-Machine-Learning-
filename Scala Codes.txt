@@ -1,0 +1,109 @@
+****************************************************************
+****************************************************************
+	Name           : Srilekha Sampath kumar
+	Assignment 2   : SparkML machine learning algorithm
+****************************************************************
+****************************************************************
+
+--Copying the Dataset to Hadoop Cluster,
+hadoop fs -mkdir /group5
+hadoop fs -copyFromLocal COVID19_cases.csv /group5/.
+hadoop fs -ls /group5/
+
+
+--Initiating Spark version 3.1,
+spark-shell --master yarn
+
+
+--Importing necessary libraries,
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer}
+import org.apache.spark.ml.feature.{VectorAssembler, VectorIndexer}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{MulticlassClassificationEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.types.{IntegerType, DoubleType}
+
+
+--Loading the dataset,
+val Covid_dataset = spark.read.format("csv")
+.option("header", "true")
+.load("hdfs://10.128.0.2:8020/group5/COVID19_cases.csv")
+
+
+--Balancing the Dataset,
+val fatal = Covid_dataset.filter(col("Outcome") === "FATAL")
+val resolved = Covid_dataset.filter(col("Outcome") === "RESOLVED")
+fatal.count()
+val Sample1 = resolved.sample(true, 0.016)
+val Sample_Outcome = fatal.unionAll(Sample1)
+Sample_Outcome.count()
+
+
+--Creating a new data frame from the balanced dataset with only required columns,
+val Dataset_Amith_Sri = Covid_dataset.select(col("Age Group"), 
+col("Classification"), 
+col("Ever Hospitalized"),
+col("Ever in ICU"),
+col("Ever Intubated"),
+col("Currently Hospitalized"),
+col("Currently in ICU"),
+col("Currently Intubated"),
+col("Outcome"))
+
+
+
+--The outcome column has been filtered for only ‘FATAL’ values and the null values (if any present) from the dataset are dropped,
+val maindata  = Dataset_Amith_Sri.withColumn("Outcome_indexed", when($"Outcome"=== "FATAL", 1).otherwise(0))
+maindata.show()
+val dataset = maindata.na.drop()
+
+
+
+--Splitting the dataset into training and test data typical 80 and 20 ratio and we give a seed so we have the same random data in each set,
+val Array(trainingData, testData) = dataset.randomSplit(Array(0.8, 0.2), 784)
+
+
+
+--Indexing all the columns,
+val Age_index = new StringIndexer().setInputCol("Age Group").setOutputCol("Age_Groups")
+
+val Classification_index = new StringIndexer().setInputCol("Classification").setOutputCol("Classifications")
+
+val Hospitalized_index = new StringIndexer().setInputCol("Currently Hospitalized").setOutputCol("Currently_Hospitalized")
+
+val ICU_index = new StringIndexer().setInputCol("Currently in ICU").setOutputCol("Currently_in_ICU")
+
+val Intubated_index = new StringIndexer().setInputCol("Currently Intubated").setOutputCol("Currently_Intubated")
+
+val Out_index = new StringIndexer().setInputCol("Outcome_indexed").setOutputCol("Outcome_index")
+
+
+
+--Using VectorAssembler function, Input columns and the Output column has been specified,
+val assembler = new VectorAssembler().setInputCols(Array("Age_Groups"
+,"Classifications"
+,"Currently_Hospitalized"
+,"Currently_Intubated"
+,"Currently_in_ICU"))
+.setOutputCol("assembled-features")
+ 
+
+--Applying Random Forest Classifier,
+val rf = new RandomForestClassifier().setFeaturesCol("assembled-features").setLabelCol("Outcome_index").setSeed(1234)
+val pipeline = new Pipeline().setStages(Array(Age_index,Classification_index,Hospitalized_index,ICU_index,Intubated_index,Out_index, assembler, rf))
+val evaluator = new MulticlassClassificationEvaluator().setLabelCol("Outcome_index").setPredictionCol("prediction").setMetricName("accuracy")
+val paramGrid = new ParamGridBuilder().addGrid(rf.maxDepth, Array(3, 5)).addGrid(rf.impurity, Array("entropy","gini")).build()
+val cross_validator = new CrossValidator().setEstimator(pipeline).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
+
+
+--Accuracy of the model is calculated using Random Forest Classifier,
+val new_Model = cross_validator.fit(trainingData)
+val predictions = new_Model.transform(testData)
+val accuracy = evaluator.evaluate(predictions)
+println("Accuracy of the data = " + accuracy)
+
+
